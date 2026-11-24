@@ -2,10 +2,12 @@ import torch
 
 
 def reduce_edge_indices(
-        edge_index:torch.Tensor,
-        num_nodes:int,
-        gradient:torch.Tensor
-) -> tuple[int, torch.Tensor]:
+    edge_index: torch.Tensor,
+    num_nodes: int,
+    gradient: torch.Tensor,
+    *,
+    return_assignments: bool = False,
+) -> tuple[int, torch.Tensor] | tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
     r"""This function performs Morse reduction on the graph, provided the 
     expected representation and gradients.
 
@@ -14,10 +16,13 @@ def reduce_edge_indices(
         num_nodes (int): Self-explanatory.
         gradient (torch.Tensor): The acyclic matching in [number_of_pairs, 2] format, where each row 
             represents a pair :math:`(vertex_index, edge_index).`
+        return_assignments (bool): Include the root IDs and cluster assignments.
 
     Returns:
-        tuple[int, torch.Tensor]: A tuple where the first component is the number of critical vertices, and 
-            the second is the COO representation of the reduced adjacency matrix.
+        The number of critical vertices and the reduced COO edge index.
+        When ``return_assignments`` is true, also return ``roots`` and ``cluster``.
+        ``roots[i]`` is the original vertex ID of coarse vertex ``i``.
+        ``cluster[v]`` is the coarse vertex ID assigned to original vertex ``v``.
     """
     critical_mask = torch.ones(num_nodes, dtype=torch.bool, device=gradient.device)
     critical_mask.index_fill_(0, gradient[:, 0], False)
@@ -40,5 +45,9 @@ def reduce_edge_indices(
     keep = torch.ones(edge_index.size(1), dtype=torch.bool, device=edge_index.device)
     keep.index_fill_(0, matched_edges, False)
     reduced_edge_index = cluster[edge_index[:, keep]]
+
+    if return_assignments:
+        roots = critical_mask.nonzero(as_tuple=True)[0]
+        return num_critical_vertices, reduced_edge_index, roots, cluster
 
     return num_critical_vertices, reduced_edge_index
