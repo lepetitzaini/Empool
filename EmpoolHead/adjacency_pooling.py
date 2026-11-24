@@ -1,6 +1,46 @@
 import torch
 
 
+def contract_edges(
+    logical_edge_index: torch.Tensor,
+    cluster: torch.Tensor,
+    matched_edge_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Contract a logical undirected COO using assignments from one forest draw.
+
+    Pass the same [2, m] edge list used for sampling, with one column per
+    undirected edge, cluster[v] the coarse ID of v, and matched_edge_ids
+    the column IDs in forest.gradient[:, 1]. The result keeps each unmatched
+    column in input order, including parallel edges and induced self-loops.
+    Use forest.roots.numel() for the vertex count, including isolated roots.
+    """
+    if matched_edge_ids.numel():
+        keep = torch.ones(
+            logical_edge_index.size(1), dtype=torch.bool, device=logical_edge_index.device
+        )
+        keep.index_fill_(0, matched_edge_ids, False)
+        logical_edge_index = logical_edge_index[:, keep]
+    return cluster[logical_edge_index]
+
+
+def logical_edges_from_bidirected(arcs: torch.Tensor) -> torch.Tensor:
+    """Take one orientation of each edge in a bidirected message-passing COO.
+
+    Requires one arc in each direction per non-loop edge and one arc per
+    logical self-loop. Parallel edges retain their multiplicity. The columns
+    of the result define the edge IDs for scoring, sampling and contraction.
+    """
+    src, dst = arcs
+    return arcs[:, src <= dst]
+
+
+def bidirected_arcs_from_logical(logical_edge_index: torch.Tensor) -> torch.Tensor:
+    """Add a reverse message-passing arc per non-loop edge, keeping multiplicity."""
+    src, dst = logical_edge_index
+    reverse = logical_edge_index[:, src != dst].flip((0,))
+    return torch.cat((logical_edge_index, reverse), dim=1)
+
+
 def reduce_edge_indices(
     edge_index: torch.Tensor,
     num_nodes: int,
@@ -8,8 +48,9 @@ def reduce_edge_indices(
     *,
     return_assignments: bool = False,
 ) -> tuple[int, torch.Tensor] | tuple[int, torch.Tensor, torch.Tensor, torch.Tensor]:
-    r"""This function performs Morse reduction on the graph, provided the 
-    expected representation and gradients.
+    r"""Perform Morse reduction from a matching without precomputed assignments.
+
+    Use ``contract_edges`` when Wilson has already supplied the cluster IDs.
 
     Args:
         edge_index (torch.Tensor): The graph representation in COO, with format [2, num_edges].
@@ -42,9 +83,7 @@ def reduce_edge_indices(
     root_rank = critical_mask.cumsum(dim=0, dtype=torch.long) - 1
     cluster = root_rank[rho]
 
-    keep = torch.ones(edge_index.size(1), dtype=torch.bool, device=edge_index.device)
-    keep.index_fill_(0, matched_edges, False)
-    reduced_edge_index = cluster[edge_index[:, keep]]
+    reduced_edge_index = contract_edges(edge_index, cluster, matched_edges)
 
     if return_assignments:
         roots = critical_mask.nonzero(as_tuple=True)[0]

@@ -22,32 +22,61 @@ class RootedForest(NamedTuple):
     cluster: torch.Tensor
 
 
+class ForestAssignments(NamedTuple):
+    """The three index tensors needed for pooling.
+
+    gradient has rows (child, logical edge ID). roots[i] is the original
+    vertex ID of coarse vertex i, and cluster[v] is the coarse ID of vertex v.
+    """
+
+    gradient: torch.Tensor
+    roots: torch.Tensor
+    cluster: torch.Tensor
+
+    def as_edge_index(self, logical_edge_index: torch.Tensor) -> torch.Tensor:
+        """Materialize the child-to-parent COO from the original logical edge list."""
+        children, edge_ids = self.gradient.unbind(dim=1)
+        src, dst = logical_edge_index.index_select(1, edge_ids)
+        parents = torch.where(children == src, dst, src)
+        return torch.stack((children, parents))
+
+
 @torch.no_grad()
-def sample_rooted_forest(
-    edge_index: torch.Tensor,
+def sample_forest_assignments(
+    logical_edge_index: torch.Tensor,
     vertex_scores: torch.Tensor,
     edge_scores: torch.Tensor,
     *,
     generator: torch.Generator | None = None,
-) -> RootedForest:
-    """Sample a weighted rooted spanning forest using Wilson's algorithm.
+) -> ForestAssignments:
+    """Sample Wilson's forest once for adjacency pooling and feature pooling.
 
-    edge_index is a long tensor of shape [2, num_edges], with one column per
+    logical_edge_index is a long tensor of shape [2, num_edges], with one column per
     logical undirected edge. Parallel edges have separate columns. Self-loops
     are skipped during sampling. The finite vertex_scores and edge_scores are
     raw logits with shapes [num_nodes] and [num_edges], respectively.
 
     The random walks run on the CPU. The optional generator is a CPU PyTorch
-    generator. All output tensors are long tensors on edge_index.device.
+    generator. All output tensors are long tensors on logical_edge_index.device.
+    Example for a batch of disjoint graphs
+
+        forest = sample_forest_assignments(logical_edge_index, vertex_scores, edge_scores)
+        edges = contract_edges(logical_edge_index, forest.cluster, forest.gradient[:, 1])
+        features = feature_pool(h, forest.roots, forest.cluster)
+        pooled_batch = batch[forest.roots]
     """
-    if edge_index.ndim != 2 or edge_index.size(0) != 2 or edge_index.dtype != torch.long:
-        raise ValueError("edge_index must be a long tensor of shape [2, num_edges].")
-    if vertex_scores.ndim != 1 or edge_scores.shape != (edge_index.size(1),):
+    if (
+        logical_edge_index.ndim != 2
+        or logical_edge_index.size(0) != 2
+        or logical_edge_index.dtype != torch.long
+    ):
+        raise ValueError("logical_edge_index must be a long tensor of shape [2, num_edges].")
+    if vertex_scores.ndim != 1 or edge_scores.shape != (logical_edge_index.size(1),):
         raise ValueError("Expected vertex_scores [num_nodes] and edge_scores [num_edges].")
     if not vertex_scores.is_floating_point() or not edge_scores.is_floating_point():
         raise ValueError("Vertex and edge scores must be floating-point tensors.")
 
-    src, dst = edge_index.tolist()
+    src, dst = logical_edge_index.tolist()
     root_logits = vertex_scores.tolist()
     edge_logits = edge_scores.tolist()
     if not all(map(isfinite, chain(root_logits, edge_logits))):
@@ -112,14 +141,34 @@ def sample_rooted_forest(
     roots = [v for v in range(num_nodes) if parent[v] == virtual_root]
     root_rank = {root: rank for rank, root in enumerate(roots)}
     cluster = [root_rank[root_of[v]] for v in range(num_nodes)]
-    children = [v for v in range(num_nodes) if parent_edge[v] >= 0]
-    parents = [parent[v] for v in children]
-    matching = [(v, parent_edge[v]) for v in children]
+    matching = [(v, edge_id) for v, edge_id in enumerate(parent_edge) if edge_id >= 0]
 
-    device = edge_index.device
-    return RootedForest(
-        edge_index=torch.tensor([children, parents], dtype=torch.long, device=device),
+    device = logical_edge_index.device
+    return ForestAssignments(
         gradient=torch.tensor(matching, dtype=torch.long, device=device).reshape(-1, 2),
         roots=torch.tensor(roots, dtype=torch.long, device=device),
         cluster=torch.tensor(cluster, dtype=torch.long, device=device),
+    )
+
+
+def sample_rooted_forest(
+    edge_index: torch.Tensor,
+    vertex_scores: torch.Tensor,
+    edge_scores: torch.Tensor,
+    *,
+    generator: torch.Generator | None = None,
+) -> RootedForest:
+    """Sample the full forest, including its child-to-parent COO (original API).
+
+    Inputs and generator follow ``sample_forest_assignments``. Use that function
+    when the matching, roots, and cluster IDs suffice for pooling.
+    """
+    forest = sample_forest_assignments(
+        edge_index, vertex_scores, edge_scores, generator=generator
+    )
+    return RootedForest(
+        edge_index=forest.as_edge_index(edge_index),
+        gradient=forest.gradient,
+        roots=forest.roots,
+        cluster=forest.cluster,
     )
