@@ -1,6 +1,24 @@
 import torch
 
-def reduce_edge_indices(edge_index:torch.Tensor, num_nodes:int, gradient:torch.Tensor):
+
+def reduce_edge_indices(
+        edge_index:torch.Tensor,
+        num_nodes:int,
+        gradient:torch.Tensor
+) -> tuple[int, torch.Tensor]:
+    r"""This function performs Morse reduction on the graph, provided the 
+    expected representation and gradients.
+
+    Args:
+        edge_index (torch.Tensor): The graph representation in COO, with format [2, num_edges].
+        num_nodes (int): Self-explanatory.
+        gradient (torch.Tensor): The acyclic matching in [number_of_pairs, 2] format, where each row 
+            represents a pair :math:`(vertex_index, edge_index).`
+
+    Returns:
+        tuple[int, torch.Tensor]: A tuple where the first component is the number of critical vertices, and 
+            the second is the COO representation of the reduced adjacency matrix.
+    """
     critical_mask = torch.ones(num_nodes, dtype=torch.bool, device=gradient.device)
     critical_mask.index_fill_(0, gradient[:, 0], False)
 
