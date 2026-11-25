@@ -1,1 +1,6 @@
 *.patch
+__pycache__/
+/build/
+/*.egg-info/
+/EmpoolHead/_wilson_cpu*.so
+/EmpoolHead/_wilson_cpu*.pyd
