@@ -1,5 +1,8 @@
 import torch
-import torch.nn as nn 
+import torch.nn as nn
+
+from ._edge_dot import edge_dot
+
 
 class RetentionScore(nn.Module):
     def __init__(self, in_dimension: int):
@@ -30,5 +33,4 @@ class ContractabilityScore(nn.Module):
         d = self.in_dimension
         weight = self.packed_weight.index_select(0, self.weight_index).view(d, d)
         projected = h @ weight
-        src, dst = edge_index
-        return (projected[src] * h[dst]).sum(dim=-1)
+        return edge_dot(projected, h, edge_index)
